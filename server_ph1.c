@@ -7,8 +7,8 @@
 #include <pthread.h>
 #include "civetweb.h" 
 
-#define POOL_SIZE 4
-#define CACHE_CAPACITY 3
+#define POOL_SIZE 8
+#define CACHE_CAPACITY 10
 
 
 
@@ -307,7 +307,8 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
             
                     if (mysql_query(conntn, query)) {
                         mg_printf(conn,"Database error\n");
-                        exit(1);
+                        release_db_conn(conntn);
+                        return 500;
                     }
                     
                     MYSQL_RES *res;
@@ -316,7 +317,9 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
 
                     while ((row = mysql_fetch_row(res))) {
                     mg_printf(conn,"Course no. %s | Course name is %s | Course Instructor %s\n",row[0],row[1],row[2]);
+                    pthread_mutex_lock(&db_lock);
                     createcourseNode(head,row[0],row[1],row[2]);
+                    pthread_mutex_unlock(&db_lock);
                     }
                 }
 
@@ -342,8 +345,9 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                 if(n>0) strcpy(cid,buf);
                 else mg_printf(conn, "mg_get_var: id not present\n");
 
-
+                pthread_mutex_lock(&db_lock);
                 struct Student* s=get(cache,id,cid);
+                pthread_mutex_unlock(&db_lock);
                 
                 if(s){
                     mg_printf(conn,"Loading from cache...\n");
@@ -354,7 +358,8 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                     sprintf(query, "SELECT courses.c_id,c_name,marks FROM course_taken,courses where course_taken.c_id=courses.c_id AND s_id=%d AND courses.c_id='%s';",id,cid);
                     if (mysql_query(conntn, query)) {
                         mg_printf(conn,"Database error\n");
-                        exit(1);
+                        release_db_conn(conntn);
+                        return 500;
                     }
                     MYSQL_RES *res;
                     MYSQL_ROW row;
@@ -367,7 +372,9 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                         strcpy(s.cid,row[0]);
                         strcpy(s.cname,row[1]);
                         s.marks=atoi(row[2]);
+                        pthread_mutex_lock(&db_lock);
                         put(cache,s);
+                        pthread_mutex_unlock(&db_lock);
                     }
                 }
            }
@@ -394,7 +401,9 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
 
 
                 //remove in cache
+                pthread_mutex_lock(&db_lock);
                 del(cache,id,cid);
+                pthread_mutex_unlock(&db_lock);
 
                 sprintf(query, "DELETE FROM course_taken WHERE s_id=%d AND c_id='%s' ", id,cid);
                   if (mysql_query(conntn, query)) {
@@ -417,6 +426,7 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                   if (mysql_query(conntn, query)) {
                     mg_printf(conn,"Database error\n");
                 }
+            pthread_mutex_lock(&db_lock);
             struct Node* curr=head->next;
             struct Node* prev=head;
             while(curr && strcmp(curr->data.cid,cid)!=0){
@@ -427,6 +437,7 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                 prev->next=curr->next;
                  free(curr);
             }
+            pthread_mutex_unlock(&db_lock);
                 mg_printf(conn,"Deleted");
 
         }
@@ -496,8 +507,10 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
                 row = mysql_fetch_row(res);
                 char tmpry[100];
                 strcpy(tmpry,row[0]);
+                pthread_mutex_lock(&db_lock);
                 if(head->next) createcourseNode(head,cid,cname,tmpry);
                     mg_printf(conn,"Course Added");
+                    pthread_mutex_unlock(&db_lock);
             }
 
                 release_db_conn(conntn);
@@ -533,11 +546,15 @@ static int api_handler(struct mg_connection *conn, void *cbdata) {
             
                   if (mysql_query(conntn, query)) {
                     mg_printf(conn,"Database error\n");
+                    release_db_conn(conntn);
+                    return 500;
                 }
 
             
                 //invalidate cache
+                pthread_mutex_lock(&db_lock);
             del(cache,sid,cid);
+            pthread_mutex_unlock(&db_lock);
 
             mg_printf(conn,"Marks Updated");
         
@@ -560,7 +577,8 @@ int main(void) {
 
     const char *options[] = {
         "document_root", ".",           
-        "listening_ports", "8080",      
+        "listening_ports", "8080",  
+        "num_threads", "30",    
         NULL
     };
     
